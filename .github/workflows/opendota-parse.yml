@@ -69,7 +69,7 @@ jobs:
             [ "$(latest_state "$id")" = PARSED ] && continue
             details=$(curl -fsS --connect-timeout 10 --max-time 30 -A "$agent" \
               "https://api.opendota.com/api/matches/$id" 2>/dev/null || true)
-            if jq -e 'type == "object" and has("version") and .version != null' \
+            if jq -e 'type == "object" and .match_id == ($id | tonumber) and .version != null' \
               >/dev/null 2>&1 <<<"$details"; then
               job=$(latest_job "$id")
               comment "PARSED $id job=${job:-unavailable} at=$(now)"
@@ -87,7 +87,7 @@ jobs:
             # The complete endpoint must explicitly report version == null.
             details=$(curl -fsS --connect-timeout 10 --max-time 30 -A "$agent" \
               "https://api.opendota.com/api/matches/$id" 2>/dev/null || true)
-            jq -e 'type == "object" and has("version")' >/dev/null 2>&1 \
+            jq -e 'type == "object" and .match_id == ($id | tonumber)' >/dev/null 2>&1 \
               <<<"$details" || {
                 comment "FAILED $id stage=details at=$(now)"; continue;
               }
