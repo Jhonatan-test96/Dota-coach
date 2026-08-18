@@ -1,0 +1,171 @@
+name: OpenDota Parse Queue
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 7 * * *'
+      timezone: America/Sao_Paulo
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: opendota-parse-queue
+  cancel-in-progress: false
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      ACCOUNT_ID: '186632203'
+
+    steps:
+      - name: Check and request parses
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          title='[state] OpenDota Parse Queue'
+
+          issue=$(gh issue list \
+            --state all \
+            --limit 100 \
+            --json number,title \
+            --jq ".[]|select(.title==\"$title\")|.number" \
+            | head -1)
+
+          if [ -z "$issue" ]; then
+            url=$(gh issue create \
+              --title "$title" \
+              --body 'Registro automático. Comentários REQUESTED/PARSED/FAILED/UNCERTAIN são a fonte de verdade do Coach.') || exit 1
+
+            issue=${url##*/}
+          fi
+
+          comments=$(gh api \
+            "repos/$GH_REPO/issues/$issue/comments?per_page=100" \
+            --paginate \
+            --jq '.[].body' 2>/dev/null || true)
+
+          now() {
+            date -u +%Y-%m-%dT%H:%M:%SZ
+          }
+
+          comment() {
+            gh issue comment "$issue" --body "$1" >/dev/null
+            comments="$comments"$'\n'"$1"
+            echo "$1"
+          }
+
+          recent=$(curl -fsS \
+            --max-time 30 \
+            -A 'Jhonatan-Dota-Coach/1.0' \
+            "https://api.opendota.com/api/players/$ACCOUNT_ID/recentMatches") || {
+              comment "FAILED-RUN recentMatches at=$(now)"
+              exit 1
+            }
+
+          # Marca como concluído todo REQUESTED cujo match já tenha version.
+          while read -r id; do
+            [ -z "$id" ] && continue
+
+            grep -Eq "^PARSED $id( |$)" <<<"$comments" && continue
+
+            d=$(curl -fsS \
+              --max-time 30 \
+              -A 'Jhonatan-Dota-Coach/1.0' \
+              "https://api.opendota.com/api/matches/$id" \
+              2>/dev/null || true)
+
+            [ -z "$d" ] && continue
+
+            if [ "$(jq -r '.version // empty' <<<"$d")" != "" ]; then
+              comment "PARSED $id at=$(now)"
+            fi
+
+          done < <(
+            grep '^REQUESTED ' <<<"$comments" \
+            | awk '{print $2}' \
+            | sort -u \
+            | head -20
+          )
+
+          n=0
+
+          while read -r id; do
+            [ -z "$id" ] && continue
+            [ "$n" -ge 5 ] && break
+
+            grep -Eq "^(REQUESTED|PARSED|FAILED|UNCERTAIN) $id( |$)" <<<"$comments" && continue
+
+            # Confirma o status no endpoint completo antes do POST.
+            d=$(curl -fsS \
+              --max-time 30 \
+              -A 'Jhonatan-Dota-Coach/1.0' \
+              "https://api.opendota.com/api/matches/$id" \
+              2>/dev/null || true)
+
+            if [ -z "$d" ]; then
+              comment "FAILED $id stage=details at=$(now)"
+              continue
+            fi
+
+            if [ "$(jq -r '.version // empty' <<<"$d")" != "" ]; then
+              comment "PARSED $id at=$(now)"
+              continue
+            fi
+
+            n=$((n+1))
+
+            tmp=$(mktemp)
+
+            code=$(curl \
+              -sS \
+              --max-time 30 \
+              -A 'Jhonatan-Dota-Coach/1.0' \
+              -o "$tmp" \
+              -w '%{http_code}' \
+              -X POST \
+              "https://api.opendota.com/api/request/$id")
+
+            rc=$?
+
+            body=$(cat "$tmp" 2>/dev/null || true)
+            rm -f "$tmp"
+
+            if [ "$rc" -ne 0 ]; then
+              comment "UNCERTAIN $id curl=$rc at=$(now)"
+              continue
+            fi
+
+            if [[ "$code" =~ ^2 ]]; then
+              job=$(jq -r '..|.jobId? // empty' <<<"$body" 2>/dev/null | head -1)
+
+              comment "REQUESTED $id job=${job:-unknown} http=$code at=$(now)"
+            else
+              err=$(tr '\n' ' ' <<<"$body" | cut -c1-300)
+
+              comment "FAILED $id http=$code at=$(now) body=$err"
+            fi
+
+            sleep 2
+
+          done < <(
+            jq -r '
+              [
+                .[]
+                | select(
+                    .lobby_type == 7
+                    and .version == null
+                  )
+              ]
+              | sort_by(.start_time)
+              | reverse
+              | .[].match_id
+            ' <<<"$recent"
+          )
