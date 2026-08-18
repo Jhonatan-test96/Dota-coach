@@ -1,9 +1,9 @@
 name: OpenDota Parse Queue
 on:
-  # Temporary manual trigger for immediate validation.
+  # Permanent manual trigger for validation and on-demand runs.
   workflow_dispatch:
   schedule:
-    - cron: '20 7 * * *'
+    - cron: '0 6 * * *'
       timezone: 'America/Sao_Paulo'
 permissions:
   contents: read
