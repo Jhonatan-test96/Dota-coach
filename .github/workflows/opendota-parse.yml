@@ -3,7 +3,9 @@ on:
   # Permanent manual trigger for validation and on-demand runs.
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 7 * * *'
+      timezone: 'America/Sao_Paulo'
+    - cron: '0 19 * * *'
       timezone: 'America/Sao_Paulo'
 permissions:
   contents: read
@@ -55,8 +57,8 @@ jobs:
               | grep -Eo 'job=[^ ]+' | cut -d= -f2 || true
           }
 
-          recent=$(curl -fsS --retry 2 --retry-all-errors --connect-timeout 10 \
-            --max-time 30 -A "$agent" \
+          recent=$(curl -fsS --retry 4 --retry-all-errors --retry-delay 5 \
+            --retry-max-time 180 --connect-timeout 10 --max-time 45 -A "$agent" \
             "https://api.opendota.com/api/players/$ACCOUNT_ID/recentMatches") || {
               comment "FAILED RUN stage=recentMatches at=$(now)"; exit 1;
             }
@@ -120,7 +122,6 @@ jobs:
             fi
             sleep 2
           done < <(
-            jq -r '.[] | select(.lobby_type == 7 and .version == null)
-              | [.start_time, .match_id] | @tsv' <<<"$recent" \
-              | sort -nr | cut -f2
+            jq -r '[.[] | select(.lobby_type == 7 and .version == null)]
+              | sort_by(.start_time) | reverse | .[:5] | .[].match_id' <<<"$recent"
           )
